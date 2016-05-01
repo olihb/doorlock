@@ -1,4 +1,5 @@
 import getopt
+import pickle
 import pprint
 import random
 import re
@@ -87,6 +88,7 @@ def get_data(device_id):
 def initialize_db(cur):
     cur.execute("drop table if exists data_points")
     cur.execute("create table data_points (range int, rate int, tag int)")
+    cur.execute("create table model (name text, current int, model blob)")
 
 
 def append_to_db(cur, data, tag):
@@ -96,41 +98,67 @@ def append_to_db(cur, data, tag):
     cur.executemany("insert into data_points values (?,?,?)", input)
 
 def update_model(cur):
+    # get data
     cur.execute("select range, rate, tag from data_points order by random()")
     rows = cur.fetchall()
-    data = np.array(rows)
-    X_raw = data[:, 0:2]
-    X = preprocessing.scale(X_raw)
+    data = np.array(rows, dtype=(float,float))
+    X = data[:, 0:2]
+    #X = preprocessing.scale(X_raw)
     Y = data[:,2]
 
-    logreg =  RandomForestClassifier()
-    logreg.fit(X,Y)
+    # build model
+    model =  RandomForestClassifier()
+    model.fit(X,Y)
+    model_name = "%s - %s" % (time.strftime("%Y/%m/%d %I:%M:%S"), type(model).__name__)
+
+    # store model
+    model_binary = lite.Binary(pickle.dumps(model, protocol=2))
+    cur.execute("update model set current=0;")
+    cur.execute("insert into model(name, current, model) values (?, 1, ?)", (model_name, model_binary))
 
 
-    h = 0.01
-    x_min, x_max = X[:, 0].min() - .5, X[:, 0].max() + .5
-    y_min, y_max = X[:, 1].min() - .5, X[:, 1].max() + .5
-    xx, yy = np.meshgrid(np.arange(x_min, x_max, h), np.arange(y_min, y_max, h))
-    Z = logreg.predict(np.c_[xx.ravel(), yy.ravel()])
-
-    # Put the result into a color plot
-    Z = Z.reshape(xx.shape)
-    plt.figure(1, figsize=(4, 3))
-    plt.pcolormesh(xx, yy, Z, cmap=plt.cm.Paired)
-
-    # Plot also the training points
-    plt.scatter(X[:, 0], X[:, 1], c=Y, edgecolors='k', cmap=plt.cm.Paired)
-
-    plt.xlim(xx.min(), xx.max())
-    plt.ylim(yy.min(), yy.max())
-    plt.xticks(())
-    plt.yticks(())
-
-    plt.show()
 
 
-def predict(cur,):
-    print ""
+#
+#    h = 0.01
+#    x_min, x_max = X[:, 0].min() - .5, X[:, 0].max() + .5
+#    y_min, y_max = X[:, 1].min() - .5, X[:, 1].max() + .5
+#    xx, yy = np.meshgrid(np.arange(x_min, x_max, h), np.arange(y_min, y_max, h))
+#    Z = logreg.predict(np.c_[xx.ravel(), yy.ravel()])
+#
+#    # Put the result into a color plot
+#    Z = Z.reshape(xx.shape)
+#    plt.figure(1, figsize=(4, 3))
+#    plt.pcolormesh(xx, yy, Z, cmap=plt.cm.Paired)
+#
+#    # Plot also the training points
+#    plt.scatter(X[:, 0], X[:, 1], c=Y, edgecolors='k', cmap=plt.cm.Paired)
+#
+#    plt.xlim(xx.min(), xx.max())
+#    plt.ylim(yy.min(), yy.max())
+#    plt.xticks(())
+#    plt.yticks(())
+#
+#    plt.show()
+
+
+def predict(cur,data):
+
+    #fetch model
+    cur.execute('select name, model from model where current=1 limit 1;')
+    row = cur.fetchone()
+    if row!=None:
+        name = row[0]
+        model = pickle.loads(str(row[1]))
+        print "using model: %s" % (name,)
+
+        # predict status from data
+        range = sum(map(lambda x: float(x['range']), data))/float(len(data))
+        rate =  sum(map(lambda x: float(x['rate']), data))/float(len(data))
+        print " range %s, rate: %s" % (range, rate)
+        print model.predict([[range,rate]])
+        print model.predict_proba([[range,rate]])
+
 
 def main(argv):
 
@@ -184,11 +212,11 @@ def main(argv):
         con.commit()
 
     # get data from sensor
-    #print "get data from sensor"
-    #data = get_data(device_id)
-    #print " data from sensor:"
-    #for point in data:
-    #    print "\trange: %s\trate: %s" % (point['range'],point['rate'])
+    print "get data from sensor"
+    data = get_data(device_id)
+    print " data from sensor:"
+    for point in data:
+        print "\trange: %s\trate: %s" % (point['range'],point['rate'])
 
     # append to db
     if append:
@@ -200,8 +228,10 @@ def main(argv):
     if build_model:
         print "build model from data"
         update_model(cur)
+        con.commit()
 
     # predict
+    predict(cur, data)
 
 
 if __name__ == "__main__":
