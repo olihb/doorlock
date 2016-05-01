@@ -6,8 +6,19 @@ import sys
 import paho.mqtt.client as mqtt
 import time
 import sqlite3 as lite
+import numpy as np
+import matplotlib.pyplot as plt
 
 # mqtt setup
+from sklearn import preprocessing
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.linear_model import SGDClassifier
+from sklearn.ensemble import RandomForestClassifier
+
 mqtt_server = 'olihb.com'
 mqtt_user = 'doorlock'
 mqtt_password = ''
@@ -84,6 +95,40 @@ def append_to_db(cur, data, tag):
         input.append((point['range'], point['rate'], tag))
     cur.executemany("insert into data_points values (?,?,?)", input)
 
+def update_model(cur):
+    cur.execute("select range, rate, tag from data_points order by random()")
+    rows = cur.fetchall()
+    data = np.array(rows)
+    X_raw = data[:, 0:2]
+    X = preprocessing.scale(X_raw)
+    Y = data[:,2]
+
+    logreg =  RandomForestClassifier()
+    logreg.fit(X,Y)
+
+
+    h = 0.01
+    x_min, x_max = X[:, 0].min() - .5, X[:, 0].max() + .5
+    y_min, y_max = X[:, 1].min() - .5, X[:, 1].max() + .5
+    xx, yy = np.meshgrid(np.arange(x_min, x_max, h), np.arange(y_min, y_max, h))
+    Z = logreg.predict(np.c_[xx.ravel(), yy.ravel()])
+
+    # Put the result into a color plot
+    Z = Z.reshape(xx.shape)
+    plt.figure(1, figsize=(4, 3))
+    plt.pcolormesh(xx, yy, Z, cmap=plt.cm.Paired)
+
+    # Plot also the training points
+    plt.scatter(X[:, 0], X[:, 1], c=Y, edgecolors='k', cmap=plt.cm.Paired)
+
+    plt.xlim(xx.min(), xx.max())
+    plt.ylim(yy.min(), yy.max())
+    plt.xticks(())
+    plt.yticks(())
+
+    plt.show()
+
+
 def predict(cur,):
     print ""
 
@@ -94,10 +139,11 @@ def main(argv):
     tag = 0
     append = False
     init_db = False
+    build_model = False
 
     # parse arguments
     try:
-        opts, args = getopt.getopt(argv, "d:a:p:i")
+        opts, args = getopt.getopt(argv, "d:a:p:im")
     except getopt.GetoptError:
         sys.exit(2)
 
@@ -122,6 +168,10 @@ def main(argv):
         if opt == '-i':
             init_db = True
 
+        # build model
+        if opt == '-m':
+            build_model = True
+
     # connect to db
     print "connect to database: %s" % (database)
     con = lite.connect(database)
@@ -134,17 +184,22 @@ def main(argv):
         con.commit()
 
     # get data from sensor
-    print "get data from sensor"
-    data = get_data(device_id)
-    print " data from sensor:"
-    for point in data:
-        print "\trange: %s\trate: %s" % (point['range'],point['rate'])
+    #print "get data from sensor"
+    #data = get_data(device_id)
+    #print " data from sensor:"
+    #for point in data:
+    #    print "\trange: %s\trate: %s" % (point['range'],point['rate'])
 
     # append to db
     if append:
         print "append data to db with tag: %s" % (tag)
         append_to_db(cur, data, tag)
         con.commit()
+
+    # build model from db
+    if build_model:
+        print "build model from data"
+        update_model(cur)
 
     # predict
 
